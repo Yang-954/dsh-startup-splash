@@ -1,0 +1,13 @@
+{
+  "name": "dsh-startup-hook",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "description": "Read-only startup progress observer for DeepSeek Harness.",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>DeepSeek Harness</title>
+<style>
+  :root{
+    --bg-0:#03060c; --bg-1:#071019; --bg-2:#0b1a28;
+    --accent:#4fe3ff; --accent-dim:rgba(79,227,255,.28);
+    --violet:#9d7bff; --violet-dim:rgba(157,123,255,.30);
+    --text-1:#eef4ff; --text-2:#9fb0c8; --text-3:#5d6f88;
+    --glass:rgba(255,255,255,.045);
+    --stroke:rgba(255,255,255,.09);
+    /* 字体：全部用黑体（无衬线），零不带点。
+       - 拉丁文/数字：Segoe UI（Windows 界面标准字体，字形干净）
+       - 中文：Microsoft YaHei UI（微软雅黑 UI 版，专为界面优化）
+       不用 Cascadia Mono / Consolas：等宽字体为了区分 0/O 会在零里加点或斜杠。 */
+    --font-display:"Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;
+    --font-body:"Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;
+    --font-mono:"Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;
+    /* 文字描边：用单层细描边代替多层阴影，边缘锐利不糊 */
+    --ink-edge: 0 0 1px rgba(0,0,0,.95), 0 1px 2px rgba(0,0,0,.75);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;overflow:hidden;background:var(--bg-0)}
+  body{
+    font-family:var(--font-body);color:var(--text-1);
+    display:flex;flex-direction:column;justify-content:space-between;
+    /* 内容区 784×441。底部 padding 加大到 24px，让 footer 离画面边缘远一点，
+       避开视频右下角的片名水印区 */
+    padding:20px 26px 24px;position:relative;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---------- 背景视频层 ---------- */
+  /* 背景视频：铺满填充（cover），保证任何比例下都没有黑边。
+     窗口按视频 16:9 设计（内容区 784×441 = 1.7778 = 1920/1080），
+     比例一致时 cover 不裁剪也不留黑边。
+     注意：视频加载需要几百毫秒，这期间不能是纯黑——下面的 .video-fallback
+     提供同色系的渐变底，等视频首帧到了再盖上去。 */
+  .video{
+    position:fixed;inset:0;width:100%;height:100%;
+    object-fit:cover;object-position:center;
+    z-index:0;background:transparent;
+  }
+  .video-fallback{
+    position:fixed;inset:0;z-index:0;
+    background:
+      radial-gradient(70% 55% at 50% 100%, rgba(120,70,40,.55), transparent 72%),
+      radial-gradient(85% 60% at 22% 18%, rgba(150,95,55,.42), transparent 74%),
+      radial-gradient(120% 95% at 50% 45%, #2a1c14 0%, #14100d 52%, #08090c 100%);
+  }
+  /* 遮罩只做「够读字」的最低限度，不压暗画面本身。
+     原来顶部 0.80、底部 0.94 太重，视频几乎被盖住；现在只留很轻的渐变，
+     文字靠自身的阴影和描边保证可读性。 */
+  .scrim{
+    position:fixed;inset:0;z-index:2;pointer-events:none;
+    background:
+      linear-gradient(to bottom, rgba(3,6,12,.42) 0%, rgba(3,6,12,.04) 26%, rgba(3,6,12,.10) 58%, rgba(3,6,12,.50) 100%),
+      radial-gradient(140% 105% at 50% 50%, rgba(3,6,12,0) 38%, rgba(3,6,12,.26) 100%);
+  }
+  .scene{position:fixed;inset:0;z-index:1;pointer-events:none;overflow:hidden}
+  .abyss{
+    position:absolute;inset:-20%;
+    background:
+      radial-gradient(60% 45% at 50% 108%, rgba(79,227,255,.16), transparent 70%),
+      radial-gradient(80% 55% at 18% 12%,  rgba(157,123,255,.13), transparent 72%),
+      radial-gradient(120% 90% at 50% 50%, var(--bg-2) 0%, var(--bg-1) 45%, var(--bg-0) 100%);
+  }
+  .abyss{opacity:0;transition:opacity .5s ease}
+  .abyss.on{opacity:1}
+  .caustics{
+    position:absolute;inset:-30%;opacity:.10;mix-blend-mode:screen;
+    background:
+      repeating-linear-gradient(102deg, transparent 0 34px, rgba(79,227,255,.05) 34px 52px, transparent 52px 96px),
+      repeating-linear-gradient(78deg,  transparent 0 58px, rgba(157,123,255,.045) 58px 74px, transparent 74px 132px);
+    animation:drift 26s linear infinite;
+  }
+  @keyframes drift{from{transform:translate3d(0,0,0)}to{transform:translate3d(-160px,26px,0)}}
+  .grain{
+    position:absolute;inset:0;opacity:.045;mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  .vignette{position:absolute;inset:0;background:radial-gradient(120% 100% at 50% 45%, transparent 40%, rgba(0,0,0,.72) 100%)}
+
+  /* 上升的气泡 / 浮游光点 */
+  .mote{
+    position:absolute;border-radius:50%;
+    background:radial-gradient(circle at 34% 30%, rgba(255,255,255,.95), var(--accent) 42%, rgba(79,227,255,0) 72%);
+    box-shadow:0 0 10px rgba(79,227,255,.55);
+    animation:rise linear infinite;
+  }
+  @keyframes rise{
+    0%{transform:translate3d(0,0,0) scale(.6);opacity:0}
+    12%{opacity:.75}
+    100%{transform:translate3d(var(--dx,0px),-104vh,0) scale(1.15);opacity:0}
+  }
+
+  /* ---------- 内容 ---------- */
+  .layer{position:relative;z-index:3;display:flex;flex-direction:column;height:100%}
+
+  header{display:flex;align-items:center;justify-content:space-between}
+  .mark{display:flex;align-items:center;gap:10px}
+  .logo{width:19px;height:19px;color:var(--text-1);filter:drop-shadow(0 0 7px rgba(79,227,255,.5))}
+  .mark-dot{
+    width:7px;height:7px;border-radius:50%;background:var(--accent);
+    box-shadow:0 0 12px var(--accent);animation:breathe 2.6s ease-in-out infinite;
+  }
+  @keyframes breathe{0%,100%{opacity:.45;transform:scale(.85)}50%{opacity:1;transform:scale(1.15)}}
+  .mark-label{
+    font-family:var(--font-mono);font-size:11px;letter-spacing:.2em;
+    text-transform:uppercase;color:rgba(226,236,250,.95);
+    text-shadow:var(--ink-edge);
+  }
+
+  .center{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;gap:16px}
+  /* 标题：渐变彩（白→冰蓝→淡紫），不用纯白。
+     之前为了"清晰"改成纯白实心，但那太扎眼；渐变彩既有层次又不刺眼。
+     清晰度靠加粗字重 + 单层描边保证，不靠改颜色。 */
+  .title{
+    font-family:var(--font-display);font-size:clamp(30px,5.2vw,42px);font-weight:700;
+    letter-spacing:-.01em;line-height:1.12;
+    background:linear-gradient(96deg,#ffffff 0%,#c9ecff 40%,#a8d8ff 62%,#c9b6ff 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    /* 渐变文字必须用 drop-shadow（text-shadow 会被 background-clip 裁掉） */
+    filter:drop-shadow(0 1px 2px rgba(0,0,0,.85));
+  }
+  .subtitle{
+    font-size:15px;font-weight:600;letter-spacing:.01em;min-height:22px;
+    display:flex;align-items:center;gap:8px;
+    /* 副标题同样用渐变彩 */
+    background:linear-gradient(96deg,#e8f6ff 0%,#9fdcff 55%,#c4aaff 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    filter:drop-shadow(0 1px 2px rgba(0,0,0,.85));
+  }
+  .subtitle .cursor{
+    width:6px;height:14px;background:var(--accent);opacity:.85;
+    animation:blink 1.05s steps(2,start) infinite;border-radius:1px;
+  }
+  @keyframes blink{0%,50%{opacity:.85}50.01%,100%{opacity:0}}
+
+  /* 鲸鱼 */
+  .whale-wrap{position:relative;width:100%;height:22px;margin-top:-2px}
+  .hint{
+    font-family:var(--font-mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--text-3);opacity:0;transition:opacity .6s ease;
+  }
+  .hint.on{opacity:.9}
+  .whale{position:absolute;bottom:2px;left:0;width:236px;height:auto;will-change:transform}
+  .whale-float{animation:swim 5.4s ease-in-out infinite}
+  @keyframes swim{
+    0%,100%{transform:translate3d(0,0,0) rotate(-1.2deg)}
+    50%{transform:translate3d(0,-9px,0) rotate(1.4deg)}
+  }
+  .whale-tail{transform-origin:186px 62px;animation:wag 2.5s ease-in-out infinite}
+  @keyframes wag{0%,100%{transform:rotate(-7deg)}50%{transform:rotate(9deg)}}
+  .whale-eye{animation:blink-eye 5.2s ease-in-out infinite}
+  @keyframes blink-eye{0%,92%,100%{transform:scaleY(1)}95%{transform:scaleY(.08)}}
+
+  /* 进度 */
+  .progress-block{width:100%;display:flex;flex-direction:column;gap:11px}
+  .track{
+    position:relative;height:4px;border-radius:99px;width:100%;
+    background:rgba(255,255,255,.07);overflow:visible;
+  }
+  .fill{
+    position:absolute;inset:0 auto 0 0;border-radius:99px;width:0%;
+    background:linear-gradient(90deg,rgba(157,123,255,.85),var(--accent));
+    box-shadow:0 0 14px var(--accent-dim),0 0 30px rgba(79,227,255,.18);
+    transition:width .42s cubic-bezier(.34,1.3,.64,1);
+  }
+  .spark{
+    position:absolute;top:50%;width:9px;height:9px;border-radius:50%;
+    background:#fff;box-shadow:0 0 12px var(--accent),0 0 26px rgba(79,227,255,.6);
+    transform:translate(-50%,-50%);left:0;transition:left .42s cubic-bezier(.34,1.3,.64,1);
+  }
+  .spark::after{
+    content:'';position:absolute;inset:-7px;border-radius:50%;
+    border:1px solid var(--accent-dim);animation:ping 2.1s ease-out infinite;
+  }
+  @keyframes ping{0%{transform:scale(.55);opacity:.9}100%{transform:scale(1.7);opacity:0}}
+
+  /* 进度条不画分段刻度：分段只在文案里体现，条本身必须是一条连续的线
+   （画刻度会让人一眼看出"人工切段"，反而显得假） */
+
+  /* 等待态：百分比连续 1.8 秒没变化时，让火花点呼吸 + 条形轻微起伏，
+   表示"还在工作"——但绝不延长进度条本身（延长就等于假装有进度）。 */
+  .waiting .spark{ animation: wait-breath 1.8s ease-in-out infinite; }
+  @keyframes wait-breath{
+    0%,100%{ box-shadow:0 0 12px var(--accent), 0 0 26px rgba(79,227,255,.5); opacity:.75; }
+    50%    { box-shadow:0 0 20px var(--accent), 0 0 44px rgba(79,227,255,.85); opacity:1; }
+  }
+  .waiting .fill{ animation: fill-warm 1.8s ease-in-out infinite; }
+  @keyframes fill-warm{ 0%,100%{ filter:brightness(1);} 50%{ filter:brightness(1.22);} }
+  .waiting .spark::after{ animation:none; opacity:0; }
+
+  .meta{display:flex;align-items:flex-end;justify-content:space-between;gap:14px}
+  /* 明细行允许占满到百分比之前的所有空间。百分比本身固定宽度，不参与收缩。 */
+  .item{
+    font-family:var(--font-mono);font-size:12px;color:#8ceeff;font-weight:500;
+    letter-spacing:.01em;opacity:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    flex:1 1 auto;min-width:0;
+    text-shadow:var(--ink-edge);
+  }
+  .item .k{color:rgba(214,228,245,.92);margin-right:8px;font-weight:600;text-shadow:var(--ink-edge)}
+  .pct{
+    flex:0 0 auto;
+    font-family:var(--font-mono);font-variant-numeric:tabular-nums;
+    font-size:36px;font-weight:700;line-height:1;letter-spacing:-.02em;
+    /* 百分比同样用渐变彩 */
+    background:linear-gradient(135deg,#e8f6ff 0%,#7fe9ff 50%,#b79cff 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    filter:drop-shadow(0 1px 3px rgba(0,0,0,.9));
+  }
+  .pct small{
+    font-size:15px;font-weight:600;margin-left:2px;
+    background:linear-gradient(135deg,#9fdcff 0%,#b79cff 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    filter:drop-shadow(0 1px 2px rgba(0,0,0,.85));
+  }
+
+  /* 底部不再加渐变衬底：衬底会把视频水印衬托得更明显，反而更乱。
+     改成把 footer 整体上移 + 单层描边，让它落在水印上方的干净区域。 */
+
+  footer{display:flex;align-items:center;justify-content:space-between;font-size:11.5px;color:rgba(226,238,252,.95);font-weight:500;text-shadow:var(--ink-edge);position:relative;z-index:3}
+  .badge{
+    font-family:var(--font-mono);letter-spacing:.14em;text-transform:uppercase;
+    display:inline-flex;align-items:center;gap:7px;
+  }
+  .badge::before{content:'';width:5px;height:5px;border-radius:50%;background:#3ddc84;box-shadow:0 0 8px #3ddc84}
+  .clock{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+
+  .ready .spark::after{animation:none;opacity:0}
+  @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+</style>
+</head>
+<body>
+<div class="video-fallback"></div>
+<video class="video" id="bg" src="video.mp4" poster="poster.jpg" autoplay muted loop playsinline preload="auto"></video>
+<div class="scene">
+  <div class="abyss"></div>
+  <div class="caustics"></div>
+  <div class="grain"></div>
+  <div id="motes"></div>
+</div>
+<div class="scrim"></div>
+
+<div class="layer">
+  <header>
+    <div class="mark">
+      <img class="logo" src="logo.svg" alt="DeepSeek" />
+      <div class="mark-label">deepseek&nbsp;harness</div>
+    </div>
+  </header>
+
+  <div class="center">
+    <div>
+      <div class="title">DeepSeek Harness</div>
+      <div class="subtitle"><span id="stage">正在启动</span><span class="cursor"></span></div>
+    </div>
+
+    <div class="whale-wrap">
+      <div class="hint" id="hint">首次加载画面素材中…</div>
+    </div>
+
+    <div class="progress-block">
+      <div class="track">
+        <div class="fill" id="fill"></div>
+        <div class="spark" id="spark"></div>
+      </div>
+      <div class="meta">
+        <div class="item"><span class="k">LOADING</span><span id="detail">active 0 / 0</span></div>
+        <div class="pct"><span id="pct">0</span><small>%</small></div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <div class="badge" id="badge">live progress · plugin activation</div>
+    <div class="clock" id="elapsed">0.0s</div>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const stateUrl = new URL('./state.json', location.href).href;
+  const el = id => document.getElementById(id);
+  const fill = el('fill'), spark = el('spark'), pctEl = el('pct');
+  const stageEl = el('stage'), detailEl = el('detail'), elapsed = el('elapsed');
+  const body = document.body;
+
+  // 浮游光点
+  const motes = el('motes');
+  for (let i = 0; i < 26; i++) {
+    const m = document.createElement('div');
+    const size = 2 + Math.random() * 4;
+    m.className = 'mote';
+    m.style.width = size + 'px';
+    m.style.height = size + 'px';
+    m.style.left = (Math.random() * 100) + '%';
+    m.style.bottom = (-10 - Math.random() * 20) + '%';
+    m.style.setProperty('--dx', (Math.random() * 60 - 30) + 'px');
+    m.style.animationDuration = (11 + Math.random() * 16) + 's';
+    m.style.animationDelay = (-Math.random() * 20) + 's';
+    m.style.opacity = 0;
+    motes.appendChild(m);
+  }
+
+  let shown = 0, target = 0, ready = false;
+  let lastPctSeen = -1, lastPctChangeAt = Date.now();
+  const start = Date.now();
+
+  // 背景视频：加载失败时退回 CSS 深海渐变，并提示素材未就位
+  const bg = el('bg');
+  const hint = el('hint');
+  const abyss = document.querySelector('.abyss');
+  function videoFailed() {
+    abyss.classList.add('on');
+    hint.classList.add('on');
+    hint.textContent = '画面素材未加载 · 已降级为渐变背景';
+  }
+  if (bg) {
+    bg.addEventListener('error', videoFailed);
+    bg.addEventListener('loadeddata', () => { hint.classList.remove('on'); });
+    if (bg.readyState >= 2) { hint.classList.remove('on'); }
+    else {
+      hint.classList.add('on');
+      hint.textContent = '正在载入画面素材…';
+      setTimeout(() => { if (bg.readyState < 2) videoFailed(); }, 2500);
+    }
+  }
+
+  function paint(v) {
+    const p = Math.max(0, Math.min(100, v));
+    fill.style.width = p + '%';
+    spark.style.left = p + '%';
+    pctEl.textContent = Math.round(p);
+  }
+
+  function loop() {
+    const d = target - shown;
+    // 目标更高才缓动前进；目标变低或已到位就直接对齐。
+    // 原来写成 Math.max(0.4, d*0.14) 对负值也生效，会让进度以每帧 0.4 一直往前爬，
+    // 永远追不上一个更低的目标。
+    if (d > 0.05) shown = Math.min(target, shown + Math.max(0.4, d * 0.14));
+    else shown = target;
+    paint(shown);
+    const t = (Date.now() - start) / 1000;
+    elapsed.textContent = t.toFixed(1) + 's';
+    requestAnimationFrame(loop);
+  }
+  loop();
+
+  async function poll() {
+    try {
+      const r = await fetch(stateUrl + '?t=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) throw new Error('http ' + r.status);
+      const s = await r.json();
+      if (typeof s.pct === 'number') {
+        if (s.pct !== lastPctSeen) { lastPctSeen = s.pct; lastPctChangeAt = Date.now(); }
+        target = s.pct;
+      }
+      // 百分比 1.8 秒没动 = 进入等待态（数字和条一起停，只让火花点呼吸）
+      const waiting = !s.ready && (Date.now() - lastPctChangeAt > 1800);
+      body.classList.toggle('waiting', waiting);
+      if (s.stage) stageEl.textContent = s.stage;
+      if (s.detail) detailEl.textContent = s.detail;
+      if (s.ready) {
+        ready = true;
+        target = 100;
+        stageEl.textContent = '准备就绪';
+        body.classList.add('ready');
+      }
+    } catch (e) { /* 还没写好，忽略 */ }
+    if (!ready) setTimeout(poll, 120);
+  }
+  poll();
+})();
+</script>
+</body>
+</html>

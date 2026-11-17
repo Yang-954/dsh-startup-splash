@@ -1,0 +1,3 @@
+- insert:
+    - id: startup-hook
+      name: 'dsh-startup-hook'
